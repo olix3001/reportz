@@ -68,9 +68,11 @@ pub const Label = struct {
 };
 
 pub const Note = struct {
+    // Color that this category label should be rendered with.
+    category_color: ansi.AnsiColor = .{ .basic = .bright_green },
     // Category of the note, that is `help` in
     // help: Please use this feature instead.
-    category: []const u8,
+    category: []const u8 = "help",
     // Message of the note.
     message: []const u8,
 };

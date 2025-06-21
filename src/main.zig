@@ -15,7 +15,6 @@ pub fn main() !void {
         .severity = .@"error",
         .code = "C001",
         .message = "Incompatible types",
-
         .labels = &.{
             lib.reports.Label{
                 .color = .{ .basic = .bright_blue },
@@ -37,6 +36,9 @@ pub fn main() !void {
                 .message = "This is of type 'string'.",
                 .span = .{ .start = 56, .end = 63 },
             },
+        },
+        .notes = &.{
+            lib.reports.Note{ .message = "You should convert the number into string." },
         },
     };
 

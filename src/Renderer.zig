@@ -36,6 +36,8 @@ pub fn render(self: *Self, diagnostic: *const reports.Diagnostic) !void {
 
     try self.renderSnippetStart();
     try self.renderSnippetContent();
+    try self.renderEmptySnippetLine();
+    try self.renderNotes();
     try self.renderSnippetEnd();
 
     self.deinit();
@@ -309,6 +311,25 @@ fn renderCodeSnippetLineWithLabels(self: *Self, line: usize) !void {
             ansi.Style.RESET,
             multiline_label_label.?.message,
         });
+    }
+}
+
+fn renderNotes(self: *Self) !void {
+    for (self.diagnostic.notes) |note| {
+        const style = ansi.Style{
+            .foreground = note.category_color,
+            .modifiers = .{ .bold = true },
+        };
+
+        try self.renderGutter(null);
+        var message_lines = std.mem.splitSequence(u8, note.message, "\n");
+        try self.writer.print("{s}{s}{s}: {s}\n", .{ style, note.category, ansi.Style.RESET, message_lines.next().? });
+
+        while (message_lines.next()) |message_line| {
+            try self.renderGutter(null);
+            try self.writer.writeAll(message_line);
+            try self.writer.writeByte('\n');
+        }
     }
 }
 
