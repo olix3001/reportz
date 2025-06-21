@@ -33,14 +33,9 @@ pub fn render(self: *Self, diagnostic: *const reports.Diagnostic) !void {
 
     try self.computeUtility();
     try self.renderHeader();
+
     try self.renderSnippetStart();
-    try self.renderEmptySnippetLine();
-
-    try self.renderCodeSnippetLineWithLabels(0);
-    try self.renderCodeSnippetLineWithLabels(1);
-    try self.renderCodeSnippetLineWithLabels(2);
-    try self.renderCodeSnippetLineWithLabels(3);
-
+    try self.renderSnippetContent();
     try self.renderSnippetEnd();
 
     self.deinit();
@@ -97,6 +92,22 @@ fn renderHeader(self: *Self) !void {
     try self.writer.print("{s}: {s}\n", .{ ansi.Style.RESET, self.diagnostic.message });
 }
 
+// Render the whole content of the snippet. This should
+// include all single- and multi-line labels, file content preview,
+// and highlighting.
+fn renderSnippetContent(self: *Self) !void {
+    top: for (self.analyzed_source.lines, 0..) |source_line, line_idx| {
+        // Check if line contains any single- or multi-line labels.
+        for (self.diagnostic.labels) |label| {
+            if ((label.span.start > source_line.byte_offset and label.span.start < source_line.byte_offset + source_line.byte_len) or (label.span.end > source_line.byte_offset and label.span.end < source_line.byte_offset + source_line.byte_len)) {
+                // This line should be rendered.
+                try self.renderCodeSnippetLineWithLabels(line_idx);
+                continue :top;
+            }
+        }
+    }
+}
+
 // Render beginning of the snippet. Example snippet start looks like this:
 //  ╭─[file.txt:3:14]
 fn renderSnippetStart(self: *Self) !void {
@@ -147,7 +158,14 @@ fn renderGutter(self: *Self, line_no: ?usize) !void {
 
     // Print vertical bar.
     const vchar = if (line_no == null) char_set.vbar_gap else char_set.vbar;
-    try self.writer.print("{u} {s}", .{ vchar, ansi.Style.RESET });
+    try self.writer.print("{u} ", .{vchar});
+
+    // And now repeat for every active multiline label.
+    for (self.active_multiline_labels.items) |active_label_color| {
+        const style = ansi.Style{ .foreground = active_label_color };
+        try self.writer.print("{s}{u} ", .{ style, vchar });
+    }
+    try self.writer.print("{s}", .{ansi.Style.RESET});
 }
 
 // Render empty snippet line. That is a line without any contents,
@@ -160,14 +178,44 @@ fn renderEmptySnippetLine(self: *Self) !void {
 // Renders snippet line with source code, all labels on this line
 // will highlight the code.
 fn renderCodeSnippetLineWithLabels(self: *Self, line: usize) !void {
-    try self.renderGutter(line + 1); // We count lines from one.
+    const char_set = self.diagnostic.config.char_set;
 
     // Render line source.
     const fragments = try self.splitLineByLabels(line);
     defer self.allocator.free(fragments);
 
     var no_inline_labels = true;
+    var multiline_label_color: ?ansi.AnsiColor = null;
+    var is_multiline_start: bool = false;
+    var multiline_label_label: ?*const reports.Label = null;
 
+    // Check if there is a multiline label highlighted here.
+    for (fragments) |fragment| {
+        if (!fragment.is_multiline) continue;
+        multiline_label_color = fragment.color;
+        is_multiline_start = fragment.is_multiline_start;
+        multiline_label_label = fragment.associated_label;
+        break;
+    }
+
+    if (multiline_label_color != null and !is_multiline_start) {
+        // Just a trick to render gutter properly.
+        const temp = self.active_multiline_labels.pop().?;
+        try self.renderGutter(line + 1);
+        try self.active_multiline_labels.append(self.allocator, temp);
+    } else try self.renderGutter(line + 1); // We count lines from one.
+
+    // Render multiline label beginning/end arrow;
+    if (multiline_label_color) |mll_color| {
+        const mll_style = ansi.Style{ .foreground = mll_color };
+        const joint_char = if (is_multiline_start) char_set.ltop else char_set.lcross;
+        try self.writer.print("{s}{u}{u}{u} ", .{ mll_style, joint_char, char_set.hbar, char_set.rarrow });
+
+        if (is_multiline_start)
+            try self.active_multiline_labels.append(self.allocator, mll_color);
+    }
+
+    // render source fragment.
     for (fragments) |fragment| {
         if (!fragment.is_multiline and fragment.associated_label != null)
             no_inline_labels = false;
@@ -190,60 +238,77 @@ fn renderCodeSnippetLineWithLabels(self: *Self, line: usize) !void {
 
     try self.writer.writeByte('\n');
 
-    if (no_inline_labels) return;
-    // And now render line labels.
-    var remaining_labels = std.ArrayList(LineFragment).init(self.allocator);
-    defer remaining_labels.deinit();
+    if (!no_inline_labels) {
+        // And now render line labels.
+        var remaining_labels = std.ArrayList(LineFragment).init(self.allocator);
+        defer remaining_labels.deinit();
 
-    try self.renderGutter(null);
-    const char_set = self.diagnostic.config.char_set;
-    var current_position: usize = 0;
-    for (fragments) |fragment| {
-        if (fragment.is_multiline) continue;
-        if (fragment.associated_label) |_| {
-            try remaining_labels.append(fragment); // This should be sorted, so that we can pop.
+        try self.renderGutter(null);
+        var current_position: usize = 0;
+        for (fragments) |fragment| {
+            if (fragment.is_multiline) continue;
+            if (fragment.associated_label) |_| {
+                try remaining_labels.append(fragment); // This should be sorted, so that we can pop.
 
-            // Adjust position to span start.
-            try self.writer.writeByteNTimes(' ', fragment.local_span.start - current_position);
-            current_position = fragment.local_span.end;
+                // Adjust position to span start.
+                try self.writer.writeByteNTimes(' ', fragment.local_span.start - current_position);
+                current_position = fragment.local_span.end;
 
-            // Write underline.
-            const style = ansi.Style{ .foreground = fragment.color };
-            try self.writer.print("{s}", .{style});
+                // Write underline.
+                const style = ansi.Style{ .foreground = fragment.color };
+                try self.writer.print("{s}", .{style});
 
-            const span_len = fragment.local_span.len();
-            for (0..span_len) |i| {
-                if (i == @divFloor(span_len, 2))
-                    try self.writer.print("{u}", .{char_set.underbar})
-                else
-                    try self.writer.print("{u}", .{char_set.underline});
+                const span_len = fragment.local_span.len();
+                for (0..span_len) |i| {
+                    if (i == @divFloor(span_len, 2))
+                        try self.writer.print("{u}", .{char_set.underbar})
+                    else
+                        try self.writer.print("{u}", .{char_set.underline});
+                }
             }
         }
-    }
-    try self.writer.writeByte('\n');
-
-    while (remaining_labels.items.len > 0) {
-        try self.renderGutter(null);
-        // safety: we check this inside while condition.
-        const current_label = remaining_labels.pop() orelse unreachable;
-
-        // Print vbar characters for all previous labels.
-        current_position = 0;
-        for (remaining_labels.items) |label| {
-            const label_center = label.local_span.start + @divFloor(label.local_span.len(), 2);
-            try self.writer.writeByteNTimes(' ', label_center - current_position);
-            current_position = label_center + 1;
-            const style = ansi.Style{ .foreground = label.color };
-            try self.writer.print("{s}{u}", .{ style, char_set.vbar });
-        }
-
-        const label_center = current_label.local_span.start + @divFloor(current_label.local_span.len(), 2);
-        try self.writer.writeByteNTimes(' ', label_center - current_position);
-        const style = ansi.Style{ .foreground = current_label.color };
-        try self.writer.print("{s}{u}{u} {s}", .{ style, char_set.lbot, char_set.hbar, ansi.Style.RESET });
-        // safety: we know remaining_labels contains only those with non-null associated_label field.
-        try self.writer.writeAll(current_label.associated_label.?.message);
         try self.writer.writeByte('\n');
+
+        while (remaining_labels.items.len > 0) {
+            try self.renderGutter(null);
+            // safety: we check this inside while condition.
+            const current_label = remaining_labels.pop() orelse unreachable;
+
+            // Print vbar characters for all previous labels.
+            current_position = 0;
+            for (remaining_labels.items) |label| {
+                const label_center = label.local_span.start + @divFloor(label.local_span.len(), 2);
+                try self.writer.writeByteNTimes(' ', label_center - current_position);
+                current_position = label_center + 1;
+                const style = ansi.Style{ .foreground = label.color };
+                try self.writer.print("{s}{u}", .{ style, char_set.vbar });
+            }
+
+            const label_center = current_label.local_span.start + @divFloor(current_label.local_span.len(), 2);
+            try self.writer.writeByteNTimes(' ', label_center - current_position);
+            const style = ansi.Style{ .foreground = current_label.color };
+            try self.writer.print("{s}{u}{u} {s}", .{ style, char_set.lbot, char_set.hbar, ansi.Style.RESET });
+            // safety: we know remaining_labels contains only those with non-null associated_label field.
+            try self.writer.writeAll(current_label.associated_label.?.message);
+            try self.writer.writeByte('\n');
+        }
+    }
+
+    // Render message from end label.
+    if (multiline_label_color != null and !is_multiline_start) {
+        try self.renderGutter(null); // Empty line.
+        try self.writer.writeByte('\n');
+        _ = self.active_multiline_labels.pop();
+        try self.renderGutter(null);
+        const mll_style = ansi.Style{ .foreground = multiline_label_color.? };
+        try self.writer.print("{s}{u}{u}{u} {s}{s}\n", .{
+            mll_style,
+            char_set.lbot,
+            char_set.hbar,
+            char_set.hbar,
+            ansi.Style.RESET,
+            multiline_label_label.?.message,
+        });
     }
 }
 
@@ -283,6 +348,7 @@ const LineFragment = struct {
     local_span: reports.Span,
     associated_label: ?*const reports.Label,
     is_multiline: bool,
+    is_multiline_start: bool,
 };
 fn splitLineByLabels(self: *Self, line: usize) ![]const LineFragment {
     const line_content = try self.analyzed_source.lineSlice(line);
@@ -362,10 +428,12 @@ fn splitLineByLabels(self: *Self, line: usize) ![]const LineFragment {
 
         // Determine if the selected label spans multiple lines
         var is_multiline = false;
+        var is_multiline_start = false;
         if (selected_label) |label| {
             const label_start_line = try self.analyzed_source.getLineOnPosition(label.span.start);
             const label_end_line = try self.analyzed_source.getLineOnPosition(label.span.end);
             is_multiline = label_start_line != label_end_line;
+            is_multiline_start = line == label_start_line;
         }
 
         try fragments.append(LineFragment{
@@ -374,6 +442,7 @@ fn splitLineByLabels(self: *Self, line: usize) ![]const LineFragment {
             .local_span = fragment_span,
             .associated_label = selected_label,
             .is_multiline = is_multiline,
+            .is_multiline_start = is_multiline_start,
         });
     }
     return try fragments.toOwnedSlice();
