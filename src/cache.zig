@@ -1,35 +1,35 @@
 const std = @import("std");
 
-pub fn SourceCache(comptime SourceId: type) type {
-    return struct {
-        allocator: std.mem.Allocator,
-        arena: std.heap.ArenaAllocator,
-        sourcemap: std.AutoHashMapUnmanaged(SourceId, AnalyzedSource) = .{},
+const reports = @import("reports.zig");
 
-        const Self = @This();
+pub const SourceCache = struct {
+    allocator: std.mem.Allocator,
+    arena: std.heap.ArenaAllocator,
+    sourcemap: std.StringHashMapUnmanaged(AnalyzedSource) = .empty,
 
-        pub fn init(allocator: std.mem.Allocator) Self {
-            return Self{
-                .allocator = allocator,
-                .arena = .init(allocator),
-            };
-        }
-        pub fn deinit(self: *Self) void {
-            self.sourcemap.deinit(self.allocator);
-            self.arena.deinit();
-        }
+    const Self = @This();
 
-        pub fn addSourcePreanalyzed(self: *Self, id: SourceId, analyzed_source: AnalyzedSource) !void {
-            try self.sourcemap.put(self.allocator, id, analyzed_source);
-        }
+    pub fn init(allocator: std.mem.Allocator) Self {
+        return Self{
+            .allocator = allocator,
+            .arena = .init(allocator),
+        };
+    }
+    pub fn deinit(self: *Self) void {
+        self.sourcemap.deinit(self.allocator);
+        self.arena.deinit();
+    }
 
-        pub fn addSource(self: *Self, id: SourceId, source: []const u8) !void {
-            if (self.sourcemap.contains(id)) return; // Compute source only once.
-            const analyzed_source: AnalyzedSource = try .compute(self.arena.allocator(), source);
-            try self.sourcemap.put(self.allocator, id, analyzed_source);
-        }
-    };
-}
+    pub fn addSourcePreanalyzed(self: *Self, id: []const u8, analyzed_source: AnalyzedSource) !void {
+        try self.sourcemap.put(self.allocator, id, analyzed_source);
+    }
+
+    pub fn addSource(self: *Self, id: []const u8, source: []const u8) !void {
+        if (self.sourcemap.contains(id)) return; // Compute source only once.
+        const analyzed_source: AnalyzedSource = try .compute(self.arena.allocator(), source);
+        try self.sourcemap.put(self.allocator, id, analyzed_source);
+    }
+};
 
 pub const AnalyzedSource = struct {
     raw: []const u8,
@@ -89,6 +89,36 @@ pub const AnalyzedSource = struct {
             .byte_len = byte_position,
         };
     }
+
+    // Given the byte offset in the source,
+    // find which line does this position appear in.
+    pub fn getLineOnPosition(self: *const Self, position: usize) !usize {
+        for (self.lines, 0..) |line, i| {
+            if (position >= line.byte_offset and position < line.byte_offset + line.byte_len)
+                return i;
+        }
+        return error.SpanOutsideSource;
+    }
+
+    // Convert span into line and char position for pretty printing.
+    pub fn spanToLocus(self: *const Self, span: reports.Span) !reports.Locus {
+        const line_no = try self.getLineOnPosition(span.start);
+        const line = &self.lines[line_no];
+        // TODO: Calculate character offset for unicode characters inside source.
+        const position = span.start - line.byte_offset;
+        return reports.Locus{
+            .line = line_no + 1, // We start line numeration from one.
+            .position = position,
+        };
+    }
+
+    // Get slice of this line's raw source.
+    pub fn lineSlice(self: *const Self, line: usize) ![]const u8 {
+        if (self.lines.len <= line)
+            return error.LineNumberTooBig;
+        const line_data = self.lines[line];
+        return self.raw[line_data.byte_offset .. line_data.byte_offset + line_data.byte_len];
+    }
 };
 
 test "AnalyzedSource.compute handles ASCII and line splits" {
@@ -144,8 +174,7 @@ test "SourceCache.addSource and deduplication works" {
 }
 
 test "SourceCache.addSourcePreanalyzed inserts directly" {
-    const SourceId = u8;
-    var cache = SourceCache(SourceId).init(std.testing.allocator);
+    var cache = SourceCache.init(std.testing.allocator);
     defer cache.deinit();
 
     const fake = try AnalyzedSource.compute(std.testing.allocator, "preloaded\nsource");

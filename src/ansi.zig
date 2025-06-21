@@ -115,6 +115,8 @@ pub const Style = struct {
     background: AnsiColor = .DEFAULT,
     modifiers: Modifiers = .{},
 
+    pub const RESET: @This() = .{ .modifiers = .{ .reset = true } };
+
     // Format function compatible with builtin zig formatters.
     pub fn format(
         self: @This(),
