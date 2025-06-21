@@ -28,6 +28,11 @@ pub fn main() !void {
                 .span = .{ .start = 43, .end = 44 },
             },
             lib.reports.Label{
+                .color = .{ .basic = .cyan },
+                .message = "This is an identifier lol. (just for showcase)",
+                .span = .{ .start = 38, .end = 39 },
+            },
+            lib.reports.Label{
                 .color = .{ .basic = .green },
                 .message = "This is of type 'string'.",
                 .span = .{ .start = 56, .end = 63 },

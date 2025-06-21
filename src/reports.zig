@@ -20,8 +20,12 @@ pub const Span = struct {
 
     pub const empty: @This() = .{ .start = 0, .end = 0 };
 
-    pub fn len(self: @This()) usize {
+    pub inline fn len(self: @This()) usize {
         return self.end - self.start;
+    }
+
+    pub fn offset_by(self: @This(), offset: usize) @This() {
+        return .{ .start = self.start - offset, .end = self.end - offset };
     }
 };
 pub const Locus = struct { line: usize, position: usize };
