@@ -24,7 +24,7 @@ pub fn main() !void {
             lib.reports.Label{
                 .color = .{ .basic = .magenta },
                 .message = "This is of type 'number'.",
-                .span = .{ .start = 35, .end = 44 },
+                .span = .{ .start = 43, .end = 44 },
             },
             lib.reports.Label{
                 .color = .{ .basic = .cyan },

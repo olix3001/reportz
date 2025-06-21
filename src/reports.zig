@@ -50,6 +50,7 @@ pub const Diagnostic = struct {
     config: Config = .{},
 
     pub const Config = struct {
+        // TODO: Implement these options. They do nothing for now (except char_set).
         colors: bool = true,
         underlines: bool = true,
         compact: bool = false,
