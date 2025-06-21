@@ -159,16 +159,14 @@ test "AnalyzedSource.compute handles Unicode characters" {
 }
 
 test "SourceCache.addSource and deduplication works" {
-    const SourceId = u32;
-    var cache = SourceCache(SourceId).init(std.testing.allocator);
+    var cache = SourceCache.init(std.testing.allocator);
     defer cache.deinit();
 
-    const id: SourceId = 1;
     const source = "line 1\nline 2";
-    try cache.addSource(id, source);
-    try cache.addSource(id, "another source"); // should be ignored
+    try cache.addSource("a", source);
+    try cache.addSource("a", "another source"); // should be ignored
 
-    const entry = cache.sourcemap.get(id).?;
+    const entry = cache.sourcemap.get("a").?;
     try std.testing.expectEqualStrings(source, entry.raw);
     try std.testing.expectEqual(@as(usize, 2), entry.lines.len);
 }
@@ -180,8 +178,8 @@ test "SourceCache.addSourcePreanalyzed inserts directly" {
     const fake = try AnalyzedSource.compute(std.testing.allocator, "preloaded\nsource");
     defer std.testing.allocator.free(fake.lines);
 
-    try cache.addSourcePreanalyzed(42, fake);
+    try cache.addSourcePreanalyzed("a", fake);
 
-    const result = cache.sourcemap.get(42).?;
+    const result = cache.sourcemap.get("a").?;
     try std.testing.expectEqualStrings("preloaded\nsource", result.raw);
 }

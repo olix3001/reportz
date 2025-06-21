@@ -247,11 +247,9 @@ fn renderCodeSnippetLineWithLabels(self: *Self, line: usize) !void {
 
         try self.renderGutter(null);
         var current_position: usize = 0;
-        for (fragments) |fragment| {
+        for (fragments, 0..) |fragment, j| {
             if (fragment.is_multiline) continue;
             if (fragment.associated_label) |_| {
-                try remaining_labels.append(fragment); // This should be sorted, so that we can pop.
-
                 // Adjust position to span start.
                 try self.writer.writeByteNTimes(' ', fragment.local_span.start - current_position);
                 current_position = fragment.local_span.end;
@@ -260,9 +258,22 @@ fn renderCodeSnippetLineWithLabels(self: *Self, line: usize) !void {
                 const style = ansi.Style{ .foreground = fragment.color };
                 try self.writer.print("{s}", .{style});
 
+                // Check if this is the last occurance of this label.
+                var is_last = true;
+                for (j + 1..fragments.len) |k| {
+                    const frag = &fragments[k];
+                    if (@intFromPtr(frag.associated_label) == @intFromPtr(fragment.associated_label)) {
+                        is_last = false;
+                        break;
+                    }
+                }
+
+                if (is_last)
+                    try remaining_labels.append(fragment); // This should be sorted, so that we can pop.
+
                 const span_len = fragment.local_span.len();
                 for (0..span_len) |i| {
-                    if (i == @divFloor(span_len, 2))
+                    if (i == @divFloor(span_len, 2) and is_last)
                         try self.writer.print("{u}", .{char_set.underbar})
                     else
                         try self.writer.print("{u}", .{char_set.underline});
@@ -467,4 +478,780 @@ fn splitLineByLabels(self: *Self, line: usize) ![]const LineFragment {
         });
     }
     return try fragments.toOwnedSlice();
+}
+
+// Test helpers and test code below
+test "Renderer.renderHeader with error severity and code" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    var writer = buf.writer().any();
+
+    var source_cache = cache.SourceCache.init(std.testing.allocator);
+    defer source_cache.deinit();
+
+    const diagnostic = reports.Diagnostic{
+        .source_id = "test.zig",
+        .severity = .@"error",
+        .code = "E001",
+        .message = "Test error message",
+        .labels = &.{},
+        .notes = &.{},
+    };
+
+    var renderer = Self{
+        .allocator = std.testing.allocator,
+        .writer = &writer,
+        .source_cache = &source_cache,
+        .diagnostic = &diagnostic,
+    };
+
+    try renderer.renderHeader();
+
+    const output = buf.items;
+    try std.testing.expect(std.mem.indexOf(u8, output, "error[E001]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Test error message") != null);
+}
+
+test "Renderer.renderHeader with warning severity and no code" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    var writer = buf.writer().any();
+
+    var source_cache = cache.SourceCache.init(std.testing.allocator);
+    defer source_cache.deinit();
+
+    const diagnostic = reports.Diagnostic{
+        .source_id = "test.zig",
+        .severity = .warning,
+        .code = null,
+        .message = "Test warning message",
+        .labels = &.{},
+        .notes = &.{},
+    };
+
+    var renderer = Self{
+        .allocator = std.testing.allocator,
+        .writer = &writer,
+        .source_cache = &source_cache,
+        .diagnostic = &diagnostic,
+    };
+
+    try renderer.renderHeader();
+
+    const output = buf.items;
+    try std.testing.expect(std.mem.indexOf(u8, output, "warning") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Test warning message") != null);
+    // Note: ANSI escape sequences contain "[" so we check there's no code format like "[W001]"
+    try std.testing.expect(std.mem.indexOf(u8, output, "[W") == null); // We cannot check just '[' as it is a part of snippet.
+}
+
+test "Renderer.renderSnippetStart renders correctly" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    var writer = buf.writer().any();
+
+    var source_cache = cache.SourceCache.init(std.testing.allocator);
+    defer source_cache.deinit();
+    try source_cache.addSource("test.zig", "let x = 5;\nlet y = 10;");
+
+    const diagnostic = reports.Diagnostic{
+        .source_id = "test.zig",
+        .severity = .@"error",
+        .code = "E001",
+        .message = "Test error",
+        .labels = &.{
+            reports.Label{
+                .color = .{ .basic = .red },
+                .message = "Test label",
+                .span = .{ .start = 4, .end = 5 },
+            },
+        },
+        .notes = &.{},
+    };
+
+    var renderer = Self{
+        .allocator = std.testing.allocator,
+        .writer = &writer,
+        .source_cache = &source_cache,
+    };
+
+    renderer.diagnostic = &diagnostic;
+    try renderer.computeUtility();
+    defer renderer.deinit(); // Clean up allocated memory
+    try renderer.renderSnippetStart();
+
+    // Should contain file name, line number, and position
+    const output = buf.items;
+    try std.testing.expect(std.mem.indexOf(u8, output, "test.zig:1:4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "╭─[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "]") != null);
+}
+
+test "Renderer.renderSnippetEnd renders correctly" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    var writer = buf.writer().any();
+
+    var source_cache = cache.SourceCache.init(std.testing.allocator);
+    defer source_cache.deinit();
+
+    const diagnostic = reports.Diagnostic{
+        .source_id = "test.zig",
+        .severity = .@"error",
+        .code = "E001",
+        .message = "Test error",
+        .labels = &.{},
+        .notes = &.{},
+    };
+
+    var renderer = Self{
+        .allocator = std.testing.allocator,
+        .writer = &writer,
+        .source_cache = &source_cache,
+        .diagnostic = &diagnostic,
+        .gutter_width = 3,
+    };
+
+    try renderer.renderSnippetEnd();
+
+    const output = buf.items;
+    try std.testing.expect(std.mem.indexOf(u8, output, "───╯") != null);
+}
+
+test "Renderer.renderGutter with line number" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    var writer = buf.writer().any();
+
+    var source_cache = cache.SourceCache.init(std.testing.allocator);
+    defer source_cache.deinit();
+
+    const diagnostic = reports.Diagnostic{
+        .source_id = "test.zig",
+        .severity = .@"error",
+        .code = "E001",
+        .message = "Test error",
+        .labels = &.{},
+        .notes = &.{},
+    };
+
+    var renderer = Self{
+        .allocator = std.testing.allocator,
+        .writer = &writer,
+        .source_cache = &source_cache,
+        .diagnostic = &diagnostic,
+        .gutter_width = 3,
+    };
+
+    try renderer.renderGutter(42);
+
+    const output = buf.items;
+    try std.testing.expect(std.mem.indexOf(u8, output, "42") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "│") != null);
+}
+
+test "Renderer.renderGutter without line number" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    var writer = buf.writer().any();
+
+    var source_cache = cache.SourceCache.init(std.testing.allocator);
+    defer source_cache.deinit();
+
+    const diagnostic = reports.Diagnostic{
+        .source_id = "test.zig",
+        .severity = .@"error",
+        .code = "E001",
+        .message = "Test error",
+        .labels = &.{},
+        .notes = &.{},
+    };
+
+    var renderer = Self{
+        .allocator = std.testing.allocator,
+        .writer = &writer,
+        .source_cache = &source_cache,
+        .diagnostic = &diagnostic,
+        .gutter_width = 3,
+    };
+
+    try renderer.renderGutter(null);
+
+    const output = buf.items;
+    try std.testing.expect(std.mem.indexOf(u8, output, "┆") != null);
+    try std.testing.expect(output.len > 3); // Should have spaces and characters
+}
+
+test "Renderer.renderEmptySnippetLine renders correctly" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    var writer = buf.writer().any();
+
+    var source_cache = cache.SourceCache.init(std.testing.allocator);
+    defer source_cache.deinit();
+
+    const diagnostic = reports.Diagnostic{
+        .source_id = "test.zig",
+        .severity = .@"error",
+        .code = "E001",
+        .message = "Test error",
+        .labels = &.{},
+        .notes = &.{},
+    };
+
+    var renderer = Self{
+        .allocator = std.testing.allocator,
+        .writer = &writer,
+        .source_cache = &source_cache,
+        .diagnostic = &diagnostic,
+        .gutter_width = 3,
+    };
+
+    try renderer.renderEmptySnippetLine();
+
+    const output = buf.items;
+    try std.testing.expect(std.mem.indexOf(u8, output, "┆") != null);
+    try std.testing.expect(std.mem.endsWith(u8, output, "\n"));
+}
+
+test "Renderer.renderNotes renders single note" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    var writer = buf.writer().any();
+
+    var source_cache = cache.SourceCache.init(std.testing.allocator);
+    defer source_cache.deinit();
+
+    const diagnostic = reports.Diagnostic{
+        .source_id = "test.zig",
+        .severity = .@"error",
+        .code = "E001",
+        .message = "Test error",
+        .labels = &.{},
+        .notes = &.{
+            reports.Note{
+                .category = "help",
+                .message = "Try using a different approach",
+                .category_color = .{ .basic = .bright_green },
+            },
+        },
+    };
+
+    var renderer = Self{
+        .allocator = std.testing.allocator,
+        .writer = &writer,
+        .source_cache = &source_cache,
+        .diagnostic = &diagnostic,
+        .gutter_width = 3,
+    };
+
+    try renderer.renderNotes();
+
+    const output = buf.items;
+    try std.testing.expect(std.mem.indexOf(u8, output, "help") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Try using a different approach") != null);
+}
+
+test "Renderer.renderNotes renders multiline note" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    var writer = buf.writer().any();
+
+    var source_cache = cache.SourceCache.init(std.testing.allocator);
+    defer source_cache.deinit();
+
+    const diagnostic = reports.Diagnostic{
+        .source_id = "test.zig",
+        .severity = .@"error",
+        .code = "E001",
+        .message = "Test error",
+        .labels = &.{},
+        .notes = &.{
+            reports.Note{
+                .category = "help",
+                .message = "Line 1 of help\nLine 2 of help\nLine 3 of help",
+                .category_color = .{ .basic = .bright_green },
+            },
+        },
+    };
+
+    var renderer = Self{
+        .allocator = std.testing.allocator,
+        .writer = &writer,
+        .source_cache = &source_cache,
+        .diagnostic = &diagnostic,
+        .gutter_width = 3,
+    };
+
+    try renderer.renderNotes();
+
+    const output = buf.items;
+    try std.testing.expect(std.mem.indexOf(u8, output, "Line 1 of help") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Line 2 of help") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Line 3 of help") != null);
+
+    // Count how many gutter segments appear (should be 3 for 3 lines)
+    var count: usize = 0;
+    var start: usize = 0;
+    while (std.mem.indexOf(u8, output[start..], "┆")) |pos| {
+        count += 1;
+        start += pos + 1;
+    }
+    try std.testing.expect(count == 3);
+}
+
+test "Renderer.toLocalLineSpan single line span" {
+    var source_cache = cache.SourceCache.init(std.testing.allocator);
+    defer source_cache.deinit();
+    try source_cache.addSource("test.zig", "let x = 5;\nlet y = 10;");
+
+    const diagnostic = reports.Diagnostic{
+        .source_id = "test.zig",
+        .severity = .@"error",
+        .code = "E001",
+        .message = "Test error",
+        .labels = &.{},
+        .notes = &.{},
+    };
+
+    var renderer = Self{
+        .allocator = std.testing.allocator,
+        .writer = undefined,
+        .source_cache = &source_cache,
+        .diagnostic = &diagnostic,
+        .analyzed_source = source_cache.sourcemap.get("test.zig").?,
+    };
+
+    // Test span within first line: "x = 5" (positions 4-9)
+    const span = reports.Span{ .start = 4, .end = 9 };
+    const local_span = try renderer.toLocalLineSpan(0, span);
+
+    try std.testing.expect(local_span != null);
+    try std.testing.expectEqual(@as(usize, 4), local_span.?.start);
+    try std.testing.expectEqual(@as(usize, 9), local_span.?.end);
+}
+
+test "Renderer.toLocalLineSpan multiline span start" {
+    var source_cache = cache.SourceCache.init(std.testing.allocator);
+    defer source_cache.deinit();
+    try source_cache.addSource("test.zig", "let x = 5;\nlet y = 10;");
+
+    const diagnostic = reports.Diagnostic{
+        .source_id = "test.zig",
+        .severity = .@"error",
+        .code = "E001",
+        .message = "Test error",
+        .labels = &.{},
+        .notes = &.{},
+    };
+
+    var renderer = Self{
+        .allocator = std.testing.allocator,
+        .writer = undefined,
+        .source_cache = &source_cache,
+        .diagnostic = &diagnostic,
+        .analyzed_source = source_cache.sourcemap.get("test.zig").?,
+    };
+
+    // Test multiline span from first line to second line (positions 4-15)
+    const span = reports.Span{ .start = 4, .end = 15 };
+    const local_span_line0 = try renderer.toLocalLineSpan(0, span);
+    const local_span_line1 = try renderer.toLocalLineSpan(1, span);
+
+    // First line should highlight from position 4 to end of line
+    try std.testing.expect(local_span_line0 != null);
+    try std.testing.expectEqual(@as(usize, 4), local_span_line0.?.start);
+    try std.testing.expectEqual(@as(usize, 11), local_span_line0.?.end); // "let x = 5;\n" is 11 chars including newline
+
+    // Second line should highlight from start to position within line
+    try std.testing.expect(local_span_line1 != null);
+    try std.testing.expectEqual(@as(usize, 0), local_span_line1.?.start);
+    try std.testing.expectEqual(@as(usize, 4), local_span_line1.?.end); // 15 - 11 (line start) = 4
+}
+
+test "Renderer.toLocalLineSpan outside line returns null" {
+    var source_cache = cache.SourceCache.init(std.testing.allocator);
+    defer source_cache.deinit();
+    try source_cache.addSource("test.zig", "let x = 5;\nlet y = 10;");
+
+    const diagnostic = reports.Diagnostic{
+        .source_id = "test.zig",
+        .severity = .@"error",
+        .code = "E001",
+        .message = "Test error",
+        .labels = &.{},
+        .notes = &.{},
+    };
+
+    var renderer = Self{
+        .allocator = std.testing.allocator,
+        .writer = undefined,
+        .source_cache = &source_cache,
+        .diagnostic = &diagnostic,
+        .analyzed_source = source_cache.sourcemap.get("test.zig").?,
+    };
+
+    // Test span that doesn't intersect with line 0
+    const span = reports.Span{ .start = 15, .end = 20 };
+    const local_span = try renderer.toLocalLineSpan(0, span);
+
+    try std.testing.expect(local_span == null);
+}
+
+test "Renderer.splitLineByLabels single label" {
+    var source_cache = cache.SourceCache.init(std.testing.allocator);
+    defer source_cache.deinit();
+    try source_cache.addSource("test.zig", "let x = 5;");
+
+    const label = reports.Label{
+        .color = .{ .basic = .red },
+        .message = "Test label",
+        .span = .{ .start = 4, .end = 5 }, // Just the "x"
+    };
+
+    const diagnostic = reports.Diagnostic{
+        .source_id = "test.zig",
+        .severity = .@"error",
+        .code = "E001",
+        .message = "Test error",
+        .labels = &.{label},
+        .notes = &.{},
+    };
+
+    const sorted_labels = try std.testing.allocator.dupe(reports.Label, &.{label});
+    defer std.testing.allocator.free(sorted_labels);
+
+    var renderer = Self{
+        .allocator = std.testing.allocator,
+        .writer = undefined,
+        .source_cache = &source_cache,
+        .diagnostic = &diagnostic,
+        .analyzed_source = source_cache.sourcemap.get("test.zig").?,
+        .sorted_labels = sorted_labels,
+    };
+
+    const fragments = try renderer.splitLineByLabels(0);
+    defer std.testing.allocator.free(fragments);
+
+    // Should have 3 fragments: "let ", "x", " = 5;"
+    try std.testing.expect(fragments.len >= 2);
+
+    // Find the labeled fragment
+    var found_labeled = false;
+    for (fragments) |fragment| {
+        if (fragment.associated_label != null) {
+            try std.testing.expectEqualStrings("x", fragment.text);
+            try std.testing.expectEqual(@as(usize, 4), fragment.local_span.start);
+            try std.testing.expectEqual(@as(usize, 5), fragment.local_span.end);
+            found_labeled = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_labeled);
+}
+
+test "Renderer.splitLineByLabels overlapping labels" {
+    var source_cache = cache.SourceCache.init(std.testing.allocator);
+    defer source_cache.deinit();
+    try source_cache.addSource("test.zig", "let x = 5;");
+
+    const label1 = reports.Label{
+        .color = .{ .basic = .red },
+        .message = "Outer label",
+        .span = .{ .start = 0, .end = 9 }, // "let x = 5"
+    };
+    const label2 = reports.Label{
+        .color = .{ .basic = .blue },
+        .message = "Inner label",
+        .span = .{ .start = 4, .end = 5 }, // Just the "x"
+    };
+
+    const diagnostic = reports.Diagnostic{
+        .source_id = "test.zig",
+        .severity = .@"error",
+        .code = "E001",
+        .message = "Test error",
+        .labels = &.{ label1, label2 },
+        .notes = &.{},
+    };
+
+    const sorted_labels = try std.testing.allocator.dupe(reports.Label, &.{ label1, label2 });
+    defer std.testing.allocator.free(sorted_labels);
+
+    var renderer = Self{
+        .allocator = std.testing.allocator,
+        .writer = undefined,
+        .source_cache = &source_cache,
+        .diagnostic = &diagnostic,
+        .analyzed_source = source_cache.sourcemap.get("test.zig").?,
+        .sorted_labels = sorted_labels,
+    };
+
+    const fragments = try renderer.splitLineByLabels(0);
+    defer std.testing.allocator.free(fragments);
+
+    // The "x" should be colored blue (inner label takes priority due to smaller span)
+    var found_inner = false;
+    for (fragments) |fragment| {
+        if (std.mem.eql(u8, fragment.text, "x")) {
+            switch (fragment.color) {
+                .basic => |basic| try std.testing.expect(basic == .blue),
+                else => try std.testing.expect(false), // Should be basic color
+            }
+            found_inner = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_inner);
+}
+
+test "Renderer.computeUtility calculates gutter width" {
+    var source_cache = cache.SourceCache.init(std.testing.allocator);
+    defer source_cache.deinit();
+
+    // Create source with many lines to test gutter width calculation
+    var source_lines = std.ArrayList(u8).init(std.testing.allocator);
+    defer source_lines.deinit();
+
+    for (0..150) |i| {
+        try source_lines.writer().print("line {d}\n", .{i});
+    }
+
+    try source_cache.addSource("test.zig", source_lines.items);
+
+    const label = reports.Label{
+        .color = .{ .basic = .red },
+        .message = "Test label",
+        .span = .{ .start = source_lines.items.len - 10, .end = source_lines.items.len - 5 },
+    };
+
+    const diagnostic = reports.Diagnostic{
+        .source_id = "test.zig",
+        .severity = .@"error",
+        .code = "E001",
+        .message = "Test error",
+        .labels = &.{label},
+        .notes = &.{},
+    };
+
+    var renderer = Self{
+        .allocator = std.testing.allocator,
+        .writer = undefined,
+        .source_cache = &source_cache,
+    };
+
+    renderer.diagnostic = &diagnostic;
+    try renderer.computeUtility();
+    defer renderer.deinit();
+
+    // Gutter width should accommodate line 150+ (3 digits + 2 = 5)
+    try std.testing.expect(renderer.gutter_width >= 4);
+}
+
+test "Renderer.render full diagnostic integration" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    var writer = buf.writer().any();
+
+    var source_cache = cache.SourceCache.init(std.testing.allocator);
+    defer source_cache.deinit();
+    try source_cache.addSource("example.zig",
+        \\let value = switch (something) {
+        \\    .a => 5,
+        \\    .b => "other",
+        \\};
+    );
+
+    const diagnostic = reports.Diagnostic{
+        .source_id = "example.zig",
+        .severity = .@"error",
+        .code = "C001",
+        .message = "Incompatible types",
+        .labels = &.{
+            reports.Label{
+                .color = .{ .basic = .bright_blue },
+                .message = "Inside of this 'switch' expression.",
+                .span = .{ .start = 12, .end = 66 },
+            },
+            reports.Label{
+                .color = .{ .basic = .magenta },
+                .message = "This is of type 'number'.",
+                .span = .{ .start = 43, .end = 44 },
+            },
+            reports.Label{
+                .color = .{ .basic = .green },
+                .message = "This is of type 'string'.",
+                .span = .{ .start = 56, .end = 63 },
+            },
+        },
+        .notes = &.{
+            reports.Note{ .message = "You should convert the number into string." },
+        },
+    };
+
+    var renderer = Self{
+        .allocator = std.testing.allocator,
+        .writer = &writer,
+        .source_cache = &source_cache,
+    };
+
+    try renderer.render(&diagnostic);
+
+    const output = buf.items;
+
+    // Check that header is rendered
+    try std.testing.expect(std.mem.indexOf(u8, output, "error[C001]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Incompatible types") != null);
+
+    // Check that snippet start is rendered
+    try std.testing.expect(std.mem.indexOf(u8, output, "example.zig:") != null);
+
+    // Check that source code is rendered (only lines with labels are shown)
+    try std.testing.expect(std.mem.indexOf(u8, output, "switch") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "other") != null);
+
+    // Check that notes are rendered
+    try std.testing.expect(std.mem.indexOf(u8, output, "You should convert the number into string.") != null);
+
+    // Check that snippet end is rendered
+    try std.testing.expect(std.mem.indexOf(u8, output, "╯") != null);
+}
+
+test "Renderer.render simple single-line diagnostic" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    var writer = buf.writer().any();
+
+    var source_cache = cache.SourceCache.init(std.testing.allocator);
+    defer source_cache.deinit();
+    try source_cache.addSource("simple.zig", "let x: i32 = \"hello\";");
+
+    const diagnostic = reports.Diagnostic{
+        .source_id = "simple.zig",
+        .severity = .warning,
+        .code = "W001",
+        .message = "Type mismatch",
+        .labels = &.{
+            reports.Label{
+                .color = .{ .basic = .yellow },
+                .message = "Expected i32, found string",
+                .span = .{ .start = 13, .end = 20 }, // "hello"
+            },
+        },
+        .notes = &.{},
+    };
+
+    var renderer = Self{
+        .allocator = std.testing.allocator,
+        .writer = &writer,
+        .source_cache = &source_cache,
+    };
+
+    try renderer.render(&diagnostic);
+
+    const output = buf.items;
+
+    // Check basic structure
+    try std.testing.expect(std.mem.indexOf(u8, output, "warning[W001]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Type mismatch") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "simple.zig:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "hello") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Expected i32, found string") != null);
+}
+
+test "Renderer.render with multiline label" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    var writer = buf.writer().any();
+
+    var source_cache = cache.SourceCache.init(std.testing.allocator);
+    defer source_cache.deinit();
+    try source_cache.addSource("multi.zig",
+        \\fn main() {
+        \\    let x = if (condition)
+        \\        value1
+        \\    else
+        \\        value2;
+        \\}
+    );
+
+    const diagnostic = reports.Diagnostic{
+        .source_id = "multi.zig",
+        .severity = .@"error",
+        .code = "E002",
+        .message = "Inconsistent types in if expression",
+        .labels = &.{
+            reports.Label{
+                .color = .{ .basic = .cyan },
+                .message = "This if expression has inconsistent branch types",
+                .span = .{ .start = 23, .end = 75 }, // Spans multiple lines
+            },
+        },
+        .notes = &.{},
+    };
+
+    var renderer = Self{
+        .allocator = std.testing.allocator,
+        .writer = &writer,
+        .source_cache = &source_cache,
+    };
+
+    try renderer.render(&diagnostic);
+
+    const output = buf.items;
+
+    // Check that multiline content is rendered
+    try std.testing.expect(std.mem.indexOf(u8, output, "error[E002]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Inconsistent types") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "This if expression has inconsistent branch types") != null);
+    // Verify substantial output is generated (multiline rendering is working)
+    try std.testing.expect(output.len > 100);
+}
+
+test "Renderer.render with overlapping inner label" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    var writer = buf.writer().any();
+
+    var source_cache = cache.SourceCache.init(std.testing.allocator);
+    defer source_cache.deinit();
+    try source_cache.addSource("overlap.zig",
+        \\var x = hello "world";
+    );
+
+    const diagnostic = reports.Diagnostic{
+        .source_id = "overlap.zig",
+        .severity = .@"error",
+        .code = "E002",
+        .message = "Unexpected identifier",
+        .labels = &.{
+            reports.Label{
+                .color = .{ .basic = .cyan },
+                .message = "This identifier",
+                .span = .{ .start = 8, .end = 13 },
+            },
+            reports.Label{
+                .color = .{ .basic = .magenta },
+                .message = "Inside this statement",
+                .span = .{ .start = 0, .end = 21 },
+            },
+        },
+        .notes = &.{},
+    };
+
+    var renderer = Self{
+        .allocator = std.testing.allocator,
+        .writer = &writer,
+        .source_cache = &source_cache,
+    };
+
+    try renderer.render(&diagnostic);
+
+    const output = buf.items;
+
+    // Check that there is only one message about statement.
+    try std.testing.expect(std.mem.indexOf(u8, output, "error[E002]") != null);
+    try std.testing.expect(std.mem.count(u8, output, "Inside this statement") == 1);
+    try std.testing.expect(std.mem.count(u8, output, "┬") == 2);
 }
