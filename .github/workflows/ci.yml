@@ -1,0 +1,29 @@
+name: Continuous Integration
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  build_and_test:
+    name: "Build and test code"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2 # This uses the latest version.
+
+      - name: Build
+        run: zig build
+
+      - name: Test
+        run: zig build test --summary all
+
+      - name: Check formatting
+        run: zig fmt --check .
