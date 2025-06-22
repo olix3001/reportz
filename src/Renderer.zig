@@ -21,6 +21,7 @@ active_multiline_labels: std.ArrayListUnmanaged(ansi.AnsiColor) = .empty,
 pub const Config = struct {
     colors: bool = true,
     underlines: bool = true,
+    ellipsis: bool = true,
     label_attachment: LabelAttachment = .center,
     tab_width: u8 = 4, // Does nothing at this moment.
     char_set: CharSet = .ROUNDED,
@@ -152,12 +153,22 @@ fn renderHeader(self: *Self) !void {
 // include all single- and multi-line labels, file content preview,
 // and highlighting.
 fn renderSnippetContent(self: *Self) !void {
+    var previous_line: usize = 0;
+    var is_first_label = true;
     top: for (self.analyzed_source.lines, 0..) |source_line, line_idx| {
         // Check if line contains any single- or multi-line labels.
         for (self.diagnostic.labels) |label| {
             if ((label.span.start > source_line.byte_offset and label.span.start < source_line.byte_offset + source_line.byte_len) or (label.span.end > source_line.byte_offset and label.span.end < source_line.byte_offset + source_line.byte_len)) {
+                // Render ellipsis if some lines were skipped.
+                if (self.config.ellipsis and previous_line + 1 != line_idx and !is_first_label) {
+                    try self.renderGutter(null);
+                    try self.writer.print("{s}\t...\n", .{self.get_gutter_style()});
+                }
+
                 // This line should be rendered.
                 try self.renderCodeSnippetLineWithLabels(line_idx);
+                previous_line = line_idx;
+                is_first_label = false;
                 continue :top;
             }
         }
@@ -1341,4 +1352,47 @@ test "Renderer.render with overlapping inner label" {
     try std.testing.expect(std.mem.indexOf(u8, output, "error[E002]") != null);
     try std.testing.expect(std.mem.count(u8, output, "Inside this statement") == 1);
     try std.testing.expect(std.mem.count(u8, output, "┬") == 2);
+}
+
+test "Renderer.render ellipsis" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    var writer = buf.writer().any();
+
+    var source_cache = cache.SourceCache.init(std.testing.allocator);
+    defer source_cache.deinit();
+    try source_cache.addSource("example.zig",
+        \\let value = switch (something) {
+        \\    .a => 5,
+        \\    .b => "other",
+        \\};
+    );
+
+    const diagnostic = reports.Diagnostic{
+        .source_id = "example.zig",
+        .severity = .@"error",
+        .code = "C001",
+        .message = "Incompatible types",
+        .labels = &.{
+            reports.Label{
+                .color = .{ .basic = .bright_blue },
+                .message = "Inside of this 'switch' expression.",
+                .span = .{ .start = 12, .end = 66 },
+            },
+        },
+    };
+
+    var renderer = Self{
+        .allocator = std.testing.allocator,
+        .writer = &writer,
+        .source_cache = &source_cache,
+    };
+
+    try renderer.render(&diagnostic);
+
+    const output = buf.items;
+
+    // Check that source code is rendered (only lines with labels are shown)
+    try std.testing.expect(std.mem.indexOf(u8, output, "switch") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "...") != null);
 }
