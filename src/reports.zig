@@ -46,17 +46,6 @@ pub const Diagnostic = struct {
     labels: []const Label = &.{},
     // Additional info, like description or help message for the diagnostic.
     notes: []const Note = &.{},
-    // Diagnostic configuration. This tells the printer how to format the final report.
-    config: Config = .{},
-
-    pub const Config = struct {
-        // TODO: Implement these options. They do nothing for now (except char_set).
-        colors: bool = true,
-        underlines: bool = true,
-        compact: bool = false,
-        tab_width: u8 = 4,
-        char_set: CharSet = .ROUNDED,
-    };
 };
 
 pub const Label = struct {
@@ -85,72 +74,4 @@ pub const LineFragment = struct {
     label: ?*const Label,
     // Whether this fragment is part of a labeled span
     is_labeled: bool,
-};
-
-// Character Set for arrows and other pretty stuff in the diagnostic report.
-// Every character is u21, which is unicode codepoint for a character.
-pub const CharSet = struct {
-    hbar: u21,
-    vbar: u21,
-    xbar: u21,
-    vbar_break: u21,
-    vbar_gap: u21,
-    uarrow: u21,
-    rarrow: u21,
-    ltop: u21,
-    mtop: u21,
-    rtop: u21,
-    lbot: u21,
-    rbot: u21,
-    mbot: u21,
-    lbox: u21,
-    rbox: u21,
-    lcross: u21,
-    rcross: u21,
-    underbar: u21,
-    underline: u21,
-
-    pub const ROUNDED: @This() = .{
-        .hbar = '─',
-        .vbar = '│',
-        .xbar = '┼',
-        .vbar_break = '┆',
-        .vbar_gap = '┆',
-        .uarrow = '▲',
-        .rarrow = '▶',
-        .ltop = '╭',
-        .mtop = '┬',
-        .rtop = '╮',
-        .lbot = '╰',
-        .mbot = '┴',
-        .rbot = '╯',
-        .lbox = '[',
-        .rbox = ']',
-        .lcross = '├',
-        .rcross = '┤',
-        .underbar = '┬',
-        .underline = '─',
-    };
-
-    pub const ASCII: @This() = .{
-        .hbar = '-',
-        .vbar = '|',
-        .xbar = '+',
-        .vbar_break = '*',
-        .vbar_gap = ':',
-        .uarrow = '^',
-        .rarrow = '>',
-        .ltop = ',',
-        .mtop = 'v',
-        .rtop = '.',
-        .lbot = '`',
-        .mbot = '^',
-        .rbot = '\'',
-        .lbox = '[',
-        .rbox = ']',
-        .lcross = '|',
-        .rcross = '|',
-        .underbar = '|',
-        .underline = '^',
-    };
 };

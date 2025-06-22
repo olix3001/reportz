@@ -4,22 +4,75 @@ const ansi = @import("ansi.zig");
 const cache = @import("cache.zig");
 const reports = @import("reports.zig");
 
+// Configuration options. Only these should be set when creating new renderer.
 allocator: std.mem.Allocator,
 writer: *std.io.AnyWriter,
-
 source_cache: *const cache.SourceCache,
-diagnostic: *const reports.Diagnostic = undefined,
+config: Config = .{},
 
 // Utility values used internally by the renderer.
 // These are computed inside `compute_utility` method.
+diagnostic: *const reports.Diagnostic = undefined,
 analyzed_source: cache.AnalyzedSource = undefined,
 gutter_width: usize = 0,
 sorted_labels: []reports.Label = &.{},
 active_multiline_labels: std.ArrayListUnmanaged(ansi.AnsiColor) = .empty,
 
+pub const Config = struct {
+    colors: bool = true,
+    underlines: bool = true,
+    label_attachment: LabelAttachment = .center,
+    tab_width: u8 = 4, // Does nothing at this moment.
+    char_set: CharSet = .ROUNDED,
+};
+
+pub const LabelAttachment = enum {
+    center,
+    end,
+
+    fn get_attachment_position(self: @This(), len: usize) usize {
+        return switch (self) {
+            .center => @divFloor(len, 2),
+            .end => len - 1,
+        };
+    }
+};
+
+// Character Set for arrows and other pretty stuff in the diagnostic report.
+// Every character is u21, which is unicode codepoint for a character.
+pub const CharSet = struct {
+    hbar: u21,
+    vbar: u21,
+    vbar_gap: u21,
+    rarrow: u21,
+    ltop: u21,
+    rtop: u21,
+    lbot: u21,
+    rbot: u21,
+    lbox: u21,
+    rbox: u21,
+    lcross: u21,
+    underbar: u21,
+    underline: u21,
+
+    // I like compactness... I know this should be multiple lines.
+    pub const ROUNDED: @This() = .{ .hbar = '─', .vbar = '│', .vbar_gap = '┆', .rarrow = '▶', .ltop = '╭', .rtop = '╮', .lbot = '╰', .rbot = '╯', .lbox = '[', .rbox = ']', .lcross = '├', .underbar = '┬', .underline = '─' };
+
+    // I like compactness... I know this should be multiple lines.
+    pub const SQUARE: @This() = .{ .hbar = '─', .vbar = '│', .vbar_gap = '┆', .rarrow = '▶', .ltop = '┌', .rtop = '┐', .lbot = '└', .rbot = '┘', .lbox = '[', .rbox = ']', .lcross = '├', .underbar = '┬', .underline = '─' };
+
+    // I like compactness... I know this should be multiple lines.
+    pub const ASCII: @This() = .{ .hbar = '-', .vbar = '|', .vbar_gap = ':', .rarrow = '>', .ltop = ',', .rtop = '.', .lbot = '`', .rbot = '\'', .lbox = '[', .rbox = ']', .lcross = '|', .underbar = '|', .underline = '^' };
+};
+
 const Self = @This();
 
-const GUTTER_STYLE = ansi.Style{ .foreground = .{ .basic = .bright_black } };
+inline fn get_gutter_style(self: *Self) ansi.Style {
+    return ansi.Style{
+        .foreground = .{ .basic = .bright_black },
+        .enabled = self.config.colors,
+    };
+}
 
 // This will be automatically called after .render, so if using this,
 // there is no need to call manually.
@@ -80,6 +133,7 @@ fn computeUtility(self: *Self) !void {
 fn renderHeader(self: *Self) !void {
     const header_style = ansi.Style{
         .foreground = self.diagnostic.severity.color(),
+        .enabled = self.config.colors,
     };
 
     // Keyword part of a header.
@@ -87,7 +141,7 @@ fn renderHeader(self: *Self) !void {
 
     // Optional code part.
     if (self.diagnostic.code) |code| {
-        try self.writer.print("[{s}]", .{code});
+        try self.writer.print("{u}{s}{u}", .{ self.config.char_set.lbox, code, self.config.char_set.rbox });
     }
 
     // Message associated with this diagnostic.
@@ -113,41 +167,47 @@ fn renderSnippetContent(self: *Self) !void {
 // Render beginning of the snippet. Example snippet start looks like this:
 //  ╭─[file.txt:3:14]
 fn renderSnippetStart(self: *Self) !void {
-    const char_set = self.diagnostic.config.char_set;
+    const char_set = self.config.char_set;
     // Start with a gutter gap.
     try self.writer.writeByteNTimes(' ', self.gutter_width);
 
     // Then some colors and special characters.
-    try self.writer.print("{s}{u}{u}[{s}", .{ GUTTER_STYLE, char_set.ltop, char_set.hbar, ansi.Style.RESET });
+    try self.writer.print("{s}{u}{u}{u}{s}", .{
+        self.get_gutter_style(),
+        char_set.ltop,
+        char_set.hbar,
+        char_set.lbox,
+        ansi.Style.RESET,
+    });
 
     // File id and location.
     const locus = try self.analyzed_source.spanToLocus(self.sorted_labels[0].span);
     try self.writer.print("{s}:{d}:{d}", .{ self.diagnostic.source_id, locus.line, locus.position });
 
     // Close bracket.
-    try self.writer.print("{s}]{s}\n", .{ GUTTER_STYLE, ansi.Style.RESET });
+    try self.writer.print("{s}{u}{s}\n", .{ self.get_gutter_style(), char_set.rbox, ansi.Style.RESET });
 }
 
 // Render end of the snippet. Snippet end is simple and looks like this:
 // ─╯
 fn renderSnippetEnd(self: *Self) !void {
     // Select color.
-    try self.writer.print("{s}", .{GUTTER_STYLE});
+    try self.writer.print("{s}", .{self.get_gutter_style()});
 
     // Start with a gutter gap. (Yes, this could be better than repeatedly calling .print)
     for (0..self.gutter_width) |_|
-        try self.writer.print("{u}", .{self.diagnostic.config.char_set.hbar});
+        try self.writer.print("{u}", .{self.config.char_set.hbar});
 
     // And then this special character.
-    try self.writer.print("{u}\n", .{self.diagnostic.config.char_set.rbot});
+    try self.writer.print("{u}\n", .{self.config.char_set.rbot});
 }
 
 // Render gutter with optional line number. Gutter includes:
 // Multiline label vertical lines, snippet border, line numbers.
 fn renderGutter(self: *Self, line_no: ?usize) !void {
-    const char_set = self.diagnostic.config.char_set;
+    const char_set = self.config.char_set;
     // Set style.
-    try self.writer.print("{s}", .{GUTTER_STYLE});
+    try self.writer.print("{s}", .{self.get_gutter_style()});
 
     if (line_no) |line_number| {
         const line_number_text = try std.fmt.allocPrint(self.allocator, "{d}", .{line_number});
@@ -164,7 +224,10 @@ fn renderGutter(self: *Self, line_no: ?usize) !void {
 
     // And now repeat for every active multiline label.
     for (self.active_multiline_labels.items) |active_label_color| {
-        const style = ansi.Style{ .foreground = active_label_color };
+        const style = ansi.Style{
+            .foreground = active_label_color,
+            .enabled = self.config.colors,
+        };
         try self.writer.print("{s}{u} ", .{ style, vchar });
     }
     try self.writer.print("{s}", .{ansi.Style.RESET});
@@ -180,7 +243,7 @@ fn renderEmptySnippetLine(self: *Self) !void {
 // Renders snippet line with source code, all labels on this line
 // will highlight the code.
 fn renderCodeSnippetLineWithLabels(self: *Self, line: usize) !void {
-    const char_set = self.diagnostic.config.char_set;
+    const char_set = self.config.char_set;
 
     // Render line source.
     const fragments = try self.splitLineByLabels(line);
@@ -209,7 +272,10 @@ fn renderCodeSnippetLineWithLabels(self: *Self, line: usize) !void {
 
     // Render multiline label beginning/end arrow;
     if (multiline_label_color) |mll_color| {
-        const mll_style = ansi.Style{ .foreground = mll_color };
+        const mll_style = ansi.Style{
+            .foreground = mll_color,
+            .enabled = self.config.colors,
+        };
         const joint_char = if (is_multiline_start) char_set.ltop else char_set.lcross;
         try self.writer.print("{s}{u}{u}{u} ", .{ mll_style, joint_char, char_set.hbar, char_set.rarrow });
 
@@ -231,10 +297,13 @@ fn renderCodeSnippetLineWithLabels(self: *Self, line: usize) !void {
         };
 
         if (!is_default_color) {
-            const style = ansi.Style{ .foreground = fragment.color };
+            const style = ansi.Style{
+                .foreground = fragment.color,
+                .enabled = self.config.colors,
+            };
             try self.writer.print("{s}{s}{s}", .{ style, clean_text, ansi.Style.RESET });
         } else {
-            try self.writer.print("{s}{s}{s}", .{ GUTTER_STYLE, clean_text, ansi.Style.RESET });
+            try self.writer.print("{s}{s}{s}", .{ self.get_gutter_style(), clean_text, ansi.Style.RESET });
         }
     }
 
@@ -255,7 +324,10 @@ fn renderCodeSnippetLineWithLabels(self: *Self, line: usize) !void {
                 current_position = fragment.local_span.end;
 
                 // Write underline.
-                const style = ansi.Style{ .foreground = fragment.color };
+                const style = ansi.Style{
+                    .foreground = fragment.color,
+                    .enabled = self.config.colors,
+                };
                 try self.writer.print("{s}", .{style});
 
                 // Check if this is the last occurance of this label.
@@ -272,11 +344,19 @@ fn renderCodeSnippetLineWithLabels(self: *Self, line: usize) !void {
                     try remaining_labels.append(fragment); // This should be sorted, so that we can pop.
 
                 const span_len = fragment.local_span.len();
+
+                const connector_char = if (self.config.underlines) char_set.underbar else char_set.vbar;
+                const connector_char_end = if (self.config.underlines) char_set.rtop else char_set.vbar;
+                const underline_char = if (self.config.underlines) char_set.underline else ' ';
+
+                const attachment_position = self.config.label_attachment.get_attachment_position(span_len);
                 for (0..span_len) |i| {
-                    if (i == @divFloor(span_len, 2) and is_last)
-                        try self.writer.print("{u}", .{char_set.underbar})
+                    if (i == attachment_position and is_last)
+                        try self.writer.print("{u}", .{
+                            if (span_len == 1 or self.config.label_attachment != .end) connector_char else connector_char_end,
+                        })
                     else
-                        try self.writer.print("{u}", .{char_set.underline});
+                        try self.writer.print("{u}", .{underline_char});
                 }
             }
         }
@@ -290,16 +370,22 @@ fn renderCodeSnippetLineWithLabels(self: *Self, line: usize) !void {
             // Print vbar characters for all previous labels.
             current_position = 0;
             for (remaining_labels.items) |label| {
-                const label_center = label.local_span.start + @divFloor(label.local_span.len(), 2);
+                const label_center = label.local_span.start + self.config.label_attachment.get_attachment_position(label.local_span.len());
                 try self.writer.writeByteNTimes(' ', label_center - current_position);
                 current_position = label_center + 1;
-                const style = ansi.Style{ .foreground = label.color };
+                const style = ansi.Style{
+                    .foreground = label.color,
+                    .enabled = self.config.colors,
+                };
                 try self.writer.print("{s}{u}", .{ style, char_set.vbar });
             }
 
-            const label_center = current_label.local_span.start + @divFloor(current_label.local_span.len(), 2);
+            const label_center = current_label.local_span.start + self.config.label_attachment.get_attachment_position(current_label.local_span.len());
             try self.writer.writeByteNTimes(' ', label_center - current_position);
-            const style = ansi.Style{ .foreground = current_label.color };
+            const style = ansi.Style{
+                .foreground = current_label.color,
+                .enabled = self.config.colors,
+            };
             try self.writer.print("{s}{u}{u} {s}", .{ style, char_set.lbot, char_set.hbar, ansi.Style.RESET });
             // safety: we know remaining_labels contains only those with non-null associated_label field.
             try self.writer.writeAll(current_label.associated_label.?.message);
@@ -313,7 +399,7 @@ fn renderCodeSnippetLineWithLabels(self: *Self, line: usize) !void {
         try self.writer.writeByte('\n');
         _ = self.active_multiline_labels.pop();
         try self.renderGutter(null);
-        const mll_style = ansi.Style{ .foreground = multiline_label_color.? };
+        const mll_style = ansi.Style{ .foreground = multiline_label_color.?, .enabled = self.config.colors };
         try self.writer.print("{s}{u}{u}{u} {s}{s}\n", .{
             mll_style,
             char_set.lbot,
@@ -330,6 +416,7 @@ fn renderNotes(self: *Self) !void {
         const style = ansi.Style{
             .foreground = note.category_color,
             .modifiers = .{ .bold = true },
+            .enabled = self.config.colors,
         };
 
         try self.renderGutter(null);

@@ -55,7 +55,6 @@ pub fn main() !void {
     var renderer = lib.Renderer{
         .allocator = allocator,
         .writer = &stdout_writer,
-
         .source_cache = &source_cache,
     };
     try renderer.render(&example_diagnostic);

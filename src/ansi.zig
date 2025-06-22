@@ -114,6 +114,7 @@ pub const Style = struct {
     foreground: AnsiColor = .DEFAULT,
     background: AnsiColor = .DEFAULT,
     modifiers: Modifiers = .{},
+    enabled: bool = true,
 
     pub const RESET: @This() = .{ .modifiers = .{ .reset = true } };
 
@@ -126,6 +127,7 @@ pub const Style = struct {
     ) !void {
         _ = fmt;
         _ = options;
+        if (!self.enabled) return; // This is a hack, but it makes life a lot easier to put it here.
 
         try self.modifiers.format(writer);
         try self.foreground.format(false, writer);
