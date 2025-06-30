@@ -1,6 +1,6 @@
 # Reportz
 
-[![GitHub License](https://img.shields.io/github/license/olix3001/reports)]()
+[![GitHub License](https://img.shields.io/github/license/olix3001/reportz)]()
 [![GitHub Repo stars](https://img.shields.io/github/stars/olix3001/reportz)]()
 [![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/olix3001/reportz/ci.yml?label=CI%20Tests)]()
 [![Commit activity](https://img.shields.io/github/commit-activity/y/olix3001/reportz)]()
