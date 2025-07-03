@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Add modules.
-    const lib_mod = b.createModule(.{
+    const lib_mod = b.addModule("reportz", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
